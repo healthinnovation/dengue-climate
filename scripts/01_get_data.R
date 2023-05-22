@@ -20,11 +20,10 @@ peru_ee <- Peru |>
 
 # 2. Meteorological and environmental data pre-processing in Earth  --------
 
-# start_year <- 2018
-start_year <- 2021
-end_year <- 2022
+start_year <- 2018
+end_year <- 2023
 start_month <- 01
-end_month <- 03
+end_month <- 12
 
 pp <- ee$ImageCollection$Dataset$`UCSB-CHG_CHIRPS_DAILY` |>
   as_tidyee() |>
