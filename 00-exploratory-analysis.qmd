@@ -1,0 +1,59 @@
+---
+title: "Exploratory data analysis"
+author: "Diego Villa"
+format: html
+editor: source
+---
+
+```{r}
+#| warning: false
+#| message: false
+library(dplyr)
+library(ggplot2)
+```
+
+## Spatio-temporal maps
+
+```{r}
+file_path = "data/processed/dengue-climate.csv"
+dengue_climate = readr::read_csv(file_path, col_types = "iciiiiDddd")
+glimpse(dengue_climate)
+```
+
+```{r}
+dengue = dengue_climate |> 
+  # mutate(incidence = 100000 * (cases / population)) |> 
+  group_by(ubigeo, year) |> 
+  # summarise(incidence = sum(incidence, na.rm = TRUE), .groups = "drop")
+  summarise(cases = sum(cases, na.rm = TRUE), .groups = "drop")
+```
+
+```{r}
+library(sf)
+dengue_climate_geom = readRDS("data/processed/dengue-climate-geom.rds")
+```
+
+```{r}
+dengue_geom = dengue |> 
+  left_join(dengue_climate_geom, by = "ubigeo") |> 
+  st_as_sf()
+```
+
+```{r}
+#| fig-width: 8
+#| fig-height: 9
+dengue_years_plot = ggplot(dengue_geom) +
+  facet_wrap(~year, ncol = 3) +
+  geom_sf(aes(fill = log(cases + 1)), color = NA) +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  scale_fill_viridis_c(name = "Cumulative\ncases")
+
+dengue_years_plot
+```
+
+```{r}
+#| eval: false
+ggsave("figures/dengue-cases-years.png", dengue_years_plot, width = 8, height = 9)
+```
+

@@ -54,4 +54,8 @@ renv.lock
 .Rprofile
 
 # data
-data/raw/
+data/
+
+# Render
+*.html
+00-exploratory-analysis_files/
