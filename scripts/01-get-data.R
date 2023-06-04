@@ -9,9 +9,7 @@ library(exactextractr)
 source("source/utils.R")
 ee_Initialize(user = "antony.barja@upch.pe", drive = T)
 
-
 # 1. Reading the Peru districts -------------------------------------------
-
 data("Peru")
 peru_ee <- Peru |>
   st_bbox() |>
@@ -20,108 +18,74 @@ peru_ee <- Peru |>
 
 # 2. Meteorological and environmental data pre-processing in Earth  --------
 
-start_year <- 2018
-end_year <- 2023
-start_month <- 01
-end_month <- 12
+start_date <- '2018-01-01'
+end_date <- '2023-12-31'
 
 pp <- ee$ImageCollection$Dataset$`UCSB-CHG_CHIRPS_DAILY` |>
   as_tidyee() |>
   select("precipitation") |>
-  filter(year %in% start_year:end_year & month %in% start_month:end_month) |>
+  filter(year %in% year(start_date):year(end_date) & month %in% month(start_date):month(end_date)) |>
   as_ee() |>
   ee$ImageCollection$toBands()
 
-tmin <- ee$ImageCollection$Dataset$ECMWF_ERA5_DAILY |>
-  as_tidyee() |>
-  select("temperature_2m_min") |>
-  filter(year %in% start_year:end_year & month %in% start_month:end_month) |>
-  as_ee() |>
-  ee$ImageCollection$toBands() |>
-  ee$Image$subtract(273.15)
+tmin <- ee$ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")$
+  select("temperature_2m_min")$
+  filterDate(start_date,end_date)$
+  toBands()$
+  subtract(273.15)
 
-tmax <- ee$ImageCollection$Dataset$ECMWF_ERA5_DAILY |>
-  as_tidyee() |>
-  select("temperature_2m_max") |>
-  filter(year %in% start_year:end_year & month %in% start_month:end_month) |>
-  as_ee() |>
-  ee$ImageCollection$toBands() |>
-  ee$Image$subtract(273.15)
+tmax <- ee$ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")$
+  select("temperature_2m_max")$
+  filterDate(start_date,end_date)$
+  toBands()$
+  subtract(273.15)
 
-etp.max <- ee$ImageCollection$Dataset$ECMWF_ERA5_DAILY |>
-  as_tidyee() |>
-  select("potential_evaporation_max") |>
-  filter(year %in% start_year:end_year & month %in% start_month:end_month) |>
-  as_ee() |>
-  ee$ImageCollection$toBands()
+etp.max <-  ee$ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")$
+  select("potential_evaporation_max")$
+  filterDate(start_date,end_date)$
+  toBands()
 
-etp.min <- ee$ImageCollection$Dataset$ECMWF_ERA5_DAILY |>
-  as_tidyee() |>
-  select("potential_evaporation_min") |>
-  filter(year %in% start_year:end_year & month %in% start_month:end_month) |>
-  as_ee() |>
-  ee$ImageCollection$toBands()
+etp.min <-  ee$ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")$
+  select("potential_evaporation_min")$
+  filterDate(start_date,end_date)$
+  toBands()
 
-runoff.max <-  ee$ImageCollection$Dataset$ECMWF_ERA5_DAILY |>
-  as_tidyee() |>
-  select("runoff_max") |>
-  filter(year %in% start_year:end_year & month %in% start_month:end_month) |>
-  as_ee() |>
-  ee$ImageCollection$toBands()
+runoff.max <-   ee$ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")$
+  select("runoff_max")$
+  filterDate(start_date,end_date)$
+  toBands()
 
-runoff.min <- ee$ImageCollection$Dataset$ECMWF_ERA5_DAILY |>
-  as_tidyee() |>
-  select("runoff_min") |>
-  filter(year %in% start_year:end_year & month %in% start_month:end_month) |>
-  as_ee() |>
-  ee$ImageCollection$toBands()
+runoff.min <- ee$ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")$
+  select("runoff_min")$
+  filterDate(start_date,end_date)$
+  toBands()
 
-# Working with GLDAS 3H to Daily
-iniDate <- paste0(start_year,'-',start_month) |> ym() |> rdate_to_eedate()
-endDate <- paste0(end_year,'-',end_month) |> ym() |> rdate_to_eedate()
-difdate <- endDate$advance(-1, 'day')$difference(iniDate, 'day')
-createList <- ee$List$sequence(0, difdate)
-listdates <- createList$map(ee_utils_pyfunc(function(x){iniDate$advance(x, 'day')}))
-
-humidity.3hours <- ee$ImageCollection$Dataset$NASA_GLDAS_V021_NOAH_G025_T3H |>
-  ee$ImageCollection$filter(ee$Filter$date(iniDate,endDate)) |>
-  ee$ImageCollection$select("Qair_f_inst")
-
-humidity.daily <- humidity.3hours$
-  fromImages(
-    listdates$map(
-      ee_utils_pyfunc(
-        function(summarize_day){
-          filterCol <- humidity.3hours$filterDate(
-            ee$Date(summarize_day),
-            ee$Date(summarize_day)$
-              advance(1, 'day')
-          )
-
-          filterCol.sum <- filterCol$sum()$select('Qair_f_inst')$
-            copyProperties(filterCol$first())$
-            setMulti(
-              list(
-                Date = ee$Date(summarize_day),
-                'system:time_start' = ee$Date(summarize_day)$millis()
-              )
-            )
-          return(filterCol.sum)
-        }
+humidity <- ee$Image("users/ambarja/GLDAS_2018-01_2023-05-10")
+humidity <- humidity |>
+  mutate(
+    date = rep(
+      seq(
+        as.Date('2018-01-01'),
+        as.Date('2023-05-09'),
+        '1 days'),
+      nrow(Peru)
       )
     )
-  ) |>
-  ee$ImageCollection$toBands()
+
+precipitacion.era5 <- ee$ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")$
+  select("total_precipitation_sum")$
+  filterDate(start_date,end_date)$
+  toBands()
 
 # Downloading variables
-
-dirpath = "data/raw/"
+dirpath = "./data/raw/"
 
 img_get_value(img = pp, dirpath)
 img_get_value(img = tmax, dirpath)
 img_get_value(img = tmin, dirpath)
-img_get_value(img = runoff.max, dirpath)
-img_get_value(img = runoff.min, dirpath)
 img_get_value(img = etp.max, dirpath)
 img_get_value(img = etp.min, dirpath)
-img_get_value(img = humidity.daily, dirpath)
+img_get_value(img = runoff.max, dirpath)
+img_get_value(img = runoff.min, dirpath)
+img_get_value(img = humidity, dirpath)
+img_get_value(img = precipitacion.era5, dirpath)

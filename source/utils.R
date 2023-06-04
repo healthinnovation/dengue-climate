@@ -5,7 +5,7 @@ img_get_value <- function(img, dirpath){
       scale = 5*1000
     )
   extract.value <- download.img |>
-    st_extract(Peru,fun = "mean") |>
+    st_extract(Peru,fun = mean) |>
     st_as_sf() |>
     mutate(ubigeo = Peru$ubigeo) |>
     st_drop_geometry()
@@ -17,7 +17,7 @@ img_get_value <- function(img, dirpath){
       values_to = "value"
     ) |>
     mutate(
-      variable = str_extract(pattern = "[Aa-zZ]+",date),
+      variable = sapply(str_extract_all(date, "[A-Za-z]+"), paste, collapse = ""),
       date = ymd(str_extract(pattern = "[0-9]+",date))
     )
   if(dir.exists(dirpath)!=1){dir.create(dirpath)}
