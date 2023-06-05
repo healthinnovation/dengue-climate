@@ -56,7 +56,9 @@ population_final = population_clean |>
     province_id = stringr::str_squish(province),
     department_id = stringr::str_squish(department)
   ) |>
-  left_join(population_ubigeo, by = c("department_id", "province_id", "district_id")) |>
+  left_join(
+    population_ubigeo, by = c("department_id", "province_id", "district_id")
+  ) |>
   select(ubigeo, starts_with("population")) |>
   arrange(ubigeo)
 
@@ -66,7 +68,16 @@ population_final_long = population_final |>
     names_prefix = "population_",
     names_to = "year",
     values_to = "population"
-  )
+  ) |>
+  group_by(ubigeo) |>
+  tidyr::complete(year = as.character(2018:2023)) |>
+  ungroup()
+
+district_population = population_final_long |>
+  group_by(ubigeo) |>
+  mutate(pop = c(na.omit(population), zoo::na.spline(population, xout = 6))) |>
+  ungroup() |>
+  select(ubigeo, year, population = pop)
 
 output_path = "data/interim/population.csv"
-readr::write_csv(population_final_long, output_path, na = "")
+readr::write_csv(district_population, output_path, na = "")
