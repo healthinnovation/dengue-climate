@@ -5,13 +5,17 @@ climate_path = "data/interim/climate.csv"
 climate = readr::read_csv(climate_path, col_types = "ciDiddd")
 
 population_path = "data/interim/population.csv"
-population = readr::read_csv(population_path, col_types = "cii")
+population = readr::read_csv(population_path, col_types = "cid")
+
+sociodemographic_path = "data/interim/sociodemographic.csv"
+sociodemographic = readr::read_csv(sociodemographic_path, col_types = "cddd")
 
 library(dplyr)
 
 dataset = dengue |>
   left_join(population, by = c("ubigeo", "year")) |>
   left_join(climate, by = c("ubigeo", "year", "week")) |>
+  left_join(sociodemographic, by = c("ubigeo")) |>
   arrange(ubigeo, year, week) |>
   mutate(district_id = as.numeric(factor(ubigeo, labels = 1:1874))) |>
   relocate(district_id, .before = everything()) |>
