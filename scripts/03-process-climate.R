@@ -1,4 +1,4 @@
-file_paths = fs::dir_ls("data/raw/climate/")
+file_paths = fs::dir_ls("data/raw/climate/", glob = "*.csv")
 datasets = purrr::map(
   file_paths,
   \(x) readr::read_csv(
@@ -26,13 +26,14 @@ weekly_dataset = dataset |>
   mutate(
     week_start = lubridate::floor_date(date, unit = "week", week_start = 7),
     week = lubridate::epiweek(date),
-    year = lubridate::epiyear(date)
+    year = lubridate::epiyear(date),
+    .keep = "unused"
   ) |>
   group_by(ubigeo, year, week_start, week) |>
-  summarise(across(max_evapo:min_temp, \(x) mean(x)), .groups = "drop") |>
+  summarise(across(everything(), \(x) mean(x)), .groups = "drop") |>
   rename_with(
     \(x) paste0("climate_", stringr::str_replace_all(x, "_", "")),
-    .cols = max_evapo:min_temp
+    .cols = -c(ubigeo, year, week_start, week)
   )
 
 output_path = "data/interim/climate.csv"

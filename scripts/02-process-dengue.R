@@ -6,8 +6,8 @@ dengue_raw = read.csv(
 
 library(dplyr)
 
-dengue_select = select(dengue_raw, c(1, 2, 4, 5))
-col_names = c("year", "week", "ubigeo", "cases")
+dengue_select = select(dengue_raw, c(1, 2, 4, 21, 22))
+col_names = c("year", "week", "ubigeo", "confirmed_cases", "probable_cases")
 names(dengue_select) = col_names
 
 dengue = dengue_select |>
