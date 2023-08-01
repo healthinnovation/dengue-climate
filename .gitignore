@@ -56,6 +56,6 @@ renv.lock
 # data
 data/
 
-# Render
+# quarto
 *.html
 00-exploratory-analysis_files/

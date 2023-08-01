@@ -16,7 +16,7 @@ library(ggplot2)
 
 ```{r}
 file_path = "data/processed/dengue-climate.csv"
-dengue_climate = readr::read_csv(file_path, col_types = "iciiiiDddd")
+dengue_climate = readr::read_csv(file_path)
 glimpse(dengue_climate)
 ```
 

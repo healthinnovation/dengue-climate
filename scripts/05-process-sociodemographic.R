@@ -1,46 +1,49 @@
-sociodemo_colnames = c(
+census_colnames = c(
   "ubigeo", "district", "population", "non_precarious_household",
-  "public_water_supply", "street_lighting", "have_fridge", "urban", "rural",
-  "men", "women", "have_insurance", "literate"
+  "public_water_supply", "street_lighting", "internet_access", "have_fridge",
+  "urban", "rural", "men", "women", "have_insurance", "literate"
 )
 
-sociodemo_raw = readr::read_csv(
-  "data/raw/sociodemographic.csv", col_names = sociodemo_colnames,
+census_raw = readr::read_csv(
+  "data/raw/sociodemographic.csv", col_names = census_colnames,
   col_types = "cccddddddddddd", skip = 1
 )
 
-library(dplyr)
-
-sociodemo = sociodemo_raw |>
-  select(ubigeo, non_precarious_household:literate) |>
+census = census_raw |>
   mutate(
     ubigeo = stringr::str_pad(ubigeo, width = 6, side = "left", pad = "0")
-  ) |>
-  rename_with(
-    \(x) paste0("socio_", stringr::str_replace_all(x, "_", "")), .cols = -ubigeo
   )
 
-socioeco_raw = readr::read_csv(
-  "data/raw/socioeconomic.csv", col_types = "cddddddddddddd"
+library(dplyr)
+
+households = census |>
+  select(ubigeo, non_precarious_household:literate, -c(urban, rural, men, women))
+
+poverty_raw = readr::read_csv(
+  "data/raw/socioeconomic.csv", col_types = "cddddddddddddd",
+  col_select = c(ubigeo, monetary_poverty, hh_1_nbi_or_more, number_hh, idh)
 )
 
-socioeco = socioeco_raw |>
-  mutate(
-    ubn = 100 * hh_1_nbi_or_more / number_hh,
-    inadequate = 100 * hh_inadequate_char / number_hh,
-    overcrowded = 100 * overcrowded_hh / number_hh,
-    nosanitation = 100 * hh_wo_sanitation / number_hh,
-    schoolabscence = 100 * hh_school_absence / number_hh,
-    highecodependence = 100 * hh_high_economic_dependence / number_hh,
-    monetarypoverty = 100 * monetary_poverty,
-    completesecondaryedu = 100 * complete_secondary_edu,
-    .keep = "unused"
-  ) |>
+poverty = poverty_raw |>
+  mutate(ubn = hh_1_nbi_or_more / number_hh, .keep = "unused")
+
+sociodemographics = inner_join(households, poverty, by = "ubigeo")
+
+library(parameters)
+
+pca_sociodemo = sociodemographics |>
+  select(-ubigeo) |>
+  principal_components(n = 4)
+
+pca_sociodemo_scores = pca_sociodemo |>
+  predict(names = c("comp1", "comp2", "comp3", "comp4")) |>
+  as_tibble()
+
+sociodemo = census |>
+  select(ubigeo, urban, rural, men, women) |>
+  bind_cols(pca_sociodemo_scores) |>
   rename_with(
     \(x) paste0("socio_", stringr::str_replace_all(x, "_", "")), .cols = -ubigeo
   )
 
-socio = sociodemo |>
-  inner_join(socioeco, by = "ubigeo")
-
-readr::write_csv(socio, "data/interim/sociodemographic.csv")
+readr::write_csv(sociodemo, "data/interim/sociodemographic.csv")
