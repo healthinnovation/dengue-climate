@@ -60,7 +60,7 @@ runoff.min <- ee$ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")$
   filterDate(start_date,end_date)$
   toBands()
 
-humidity <- ee$Image("users/ambarja/GLDAS_2018-01_2023-05-10")
+humidity <- ee$Image("users/ambarja/GLDAS_2018-01_2023-06-30")
 humidity <- humidity |>
   mutate(
     date = rep(
