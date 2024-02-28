@@ -1,0 +1,1503 @@
+---
+title: "Dengue_analysis_outbreaks"
+output: html_document
+date: "2023-11-09"
+---
+
+# Package and data
+
+
+```{r,message=F,warning=F}
+
+# Nuevo enfoque solo analysis de 2023
+
+library(tidyverse)
+library(INLA)
+library(udunits2)
+library(sf)
+library(spdep)
+library(tictoc)
+library(dlnm)    
+library(zoo)    
+
+
+db.coast                  <- readRDS("data/coast-2023.rds") 
+db.jungle                 <- readRDS("data/jungle-2023.rds") 
+
+
+Peru_coast               <-  read_sf("data/coast-2023-shapefile.shp")%>% 
+                             mutate(district_id=row_number()) %>% 
+                             rename(ubigeo_shape = ubigeo)
+
+Peru_jungle               <-  read_sf("data/jungle-2023-shapefile.shp")%>% 
+                             mutate(district_id=row_number()) %>% 
+                             rename(ubigeo_shape = ubigeo)
+
+
+
+db.coast.full           <-  db.coast %>% 
+                            left_join(Peru_coast,c("district_id"="district_id")) %>% 
+                            st_drop_geometry() %>% 
+                            ungroup() %>% 
+                            mutate(dep_index = as.numeric(factor(dep)),
+                                   cases_tot = confirmed_cases + probable_cases ) %>% 
+                            group_by(prov_code) %>% 
+                            mutate(prov_id = group_indices()) %>% 
+                            ungroup() %>% 
+                            mutate(mes = as.numeric(month(week_start))) 
+
+
+db.jungle.full            <-  db.jungle %>% 
+                              left_join(Peru_jungle,c("district_id"="district_id")) %>% 
+                              st_drop_geometry() %>% 
+                              ungroup() %>% 
+                              mutate(dep_index = as.numeric(factor(dep)),
+                                     cases_tot = confirmed_cases + probable_cases ) %>% 
+                              group_by(prov_code) %>% 
+                              mutate(prov_id = group_indices()) %>% 
+                              ungroup() %>% 
+                              mutate(mes = as.numeric(month(week_start))) 
+
+
+
+
+peru_coast.adj             <- poly2nb(Peru_coast)
+peru_jungle.adj            <- poly2nb(Peru_jungle)
+
+
+
+
+W.peru_coast       <- nb2mat(peru_coast.adj, style = "W")
+W.peru_jungle      <- nb2mat(peru_jungle.adj, style = "W")
+  
+
+
+```
+
+
+# function
+
+## running
+
+```{r,message=F,warning=F}
+
+
+
+inla.batch.dengue <- function(formula, dat1 = db.sf.full) {
+                   model = inla(formula, data=dat1, family="nbinomial", 
+                               offset=log(population), verbose = F, 
+                                #control.inla=list(strategy="gaussian"),
+                                control.inla=list(strategy="adaptive"),
+                                control.compute=list(config=F, dic=T, cpo=T, waic=T,
+                                                     return.marginals = FALSE),
+                                control.fixed = list(correlation.matrix=T),
+                                control.predictor=list(link=1,compute=TRUE)
+                            )
+                   model  <- inla.rerun(model)
+                   return(model)
+}
+
+
+
+
+scale.den <- function(x){
+              (x - mean(x, na.rm=TRUE)) / sd(x, na.rm=TRUE)
+}
+
+
+```
+
+
+## plotting
+
+```{r,message=F,warning=F}
+
+predt_calculate<-function(model,index_basis,data,cross_basis,variable_basis){
+  
+  coef1        <- model$summary.fixed
+  indt         <- model$names.fixed[index_basis:length(model$names.fixed)] 
+    ab         <- coef1[indt,]$mean
+   names(ab)   <- rownames(coef1)[index_basis:length(model$names.fixed)]
+   vcov        <- model$misc$lincomb.derived.covariance.matrix  # 
+        vcov1  <- vcov[indt,indt]
+
+
+predt <- crosspred(cross_basis, coef = ab, vcov=vcov1,
+                   model.link = "log", bylag = 0.25, 
+                   cen = median(data$variable_basis)) 
+
+return(predt)
+
+}
+
+#######################
+
+
+
+
+
+two_cross_section_plot_2<-function(predt_object,basis_variable,
+                                   palette = "BrBG",
+                                   cut.a,cut.a.label = " ",
+                                   cut.b,cut.b.label = " ",
+                                   lag_basis,lim_max_y=max(r2, 1.01)){
+  
+# 2do grafico niveles
+  ma       <- predt_object$matRRfit
+  rr       <- predt_object$matRRfit
+  rr.lci   <- predt_object$matRRlow
+  rr.uci   <- predt_object$matRRhigh
+
+  
+  # set relative risk range
+  r1 <- min(range(rr, rr.lci, rr.uci))
+  r2 <- max(range(rr, rr.lci, rr.uci))
+  
+  #get exposure values
+  m.db   <- mean(basis_variable)
+  sd.db  <- sd( basis_variable) # ejm data$temp.max.full, tiene que ser un vector
+
+  vars<-predt_object$predvar 
+  
+  # selected values
+  mn <- which(round(vars, 2) == cut.a) # 
+  mx <- which(round(vars, 2) == cut.b) #
+  
+  # define colors
+  library(RColorBrewer)
+   col1 <- brewer.pal(11, palette)[10]
+  tcol1 <- do.call(rgb, c(as.list(col2rgb(col1)), alpha = 255/4, max = 255))
+  
+   col2 <- brewer.pal(11, palette)[2]
+  tcol2 <- do.call(rgb, c(as.list(col2rgb(col2)), alpha = 255/4, max = 255))
+  
+  # define x values (lag, by lag)
+  lagbylag <- seq(0, lag_basis, 0.25)
+
+  # dry
+  plot(lagbylag, rr[mn,],
+       col = col1, type = "l", lwd = 1, 
+       xlab = "Lag", ylab = "Relative risk", main = "", 
+       ylim = c(r1, lim_max_y), frame.plot = T, axes = F)
+  axis(1, at = 0:lag_basis, labels = 0:lag_basis)
+  axis(2)
+  xx <- c(lagbylag, rev(lagbylag))
+  yy <- c(rr.lci[mn,], rev(rr.uci[mn,]))
+  polygon(xx, yy, col = tcol1, border = tcol1)
+  # wet
+  lines(lagbylag, rr[mx,], col = col2, lwd = 1)
+  xx<-c(lagbylag, rev(lagbylag))
+  yy<-c(rr.lci[mx,], rev(rr.uci[mx,]))
+  polygon(xx, yy, col = tcol2, border = tcol2)
+  abline(h = 1, lty = 3)
+  legend("top", legend = c(cut.a.label,cut.b.label), 
+          col = c(col1, col2), lwd = 2, lty = 1, bty = "n", y.intersp = 1.5)
+
+   
+}
+
+
+
+contour_predt_plot<-function(predt_object,palette="BrBG",nlag,var_lab,
+                             custom_breaks_x){
+  
+  
+  predt <- predt_object
+     y  <- predt$predvar
+     x  <- seq(0, nlag, 0.25)
+      z <- t(predt$matRRfit)
+
+library(RColorBrewer)
+pal <- rev(brewer.pal(11, palette))
+levels <- pretty(z, 20)
+col1 <- colorRampPalette(pal[1:6])
+col2 <- colorRampPalette(pal[6:11])
+cols <- c(col1(sum(levels < 1)), col2(sum(levels > 1)))
+
+filled.contour(x,y,z,
+               xlab = "Lag", ylab = var_lab, main = " ",
+               col = cols,levels = levels, 
+               plot.axes = { axis(1, at = 0:nlag, c(0:nlag)) 
+                 axis(2)})
+
+
+  
+}
+
+
+fitted_rate_plot <-function (db_shp,inla_model){
+  RR <- inla_model$summary.fitted.values[, "mean"]
+  db_shp$RR <- RR
+  return(db_shp)
+  
+  
+}
+
+
+
+```
+
+
+# Crossbasis
+
+# 16 lags
+
+## hyper 2
+
+```{r,message=F,warning=F}
+
+
+nlag        <- 16
+
+
+
+lag_prcpmean_ct       <- tsModel::Lag(db.coast.full$climate_precipitationmean, 
+                            group = db.coast.full$district_id, k = 0:nlag)
+
+
+lag_tmean_ct          <- tsModel::Lag(db.coast.full$climate_meantempmean, 
+                            group = db.coast.full$district_id, k = 0:nlag)
+
+
+lag_prcpmean_jgl      <- tsModel::Lag(db.jungle.full$climate_precipitationmean, 
+                            group = db.jungle.full$district_id, k = 0:nlag)
+
+
+
+lag_tmean_jgl          <- tsModel::Lag(db.jungle.full$climate_meantempmean, 
+                            group = db.jungle.full$district_id, k = 0:nlag)
+
+
+#################################################################################
+
+
+cb.4.1.2.15.0_ct<-crossbasis(lag_tmean_ct, 
+                    argvar = list(fun="poly",degree=2,intercept=FALSE),
+                    arglag = list(fun="poly",degree=1,intercept=TRUE)   ### 1 
+                                      )
+
+
+
+cb.4.2.2.15.0_ct<-crossbasis(lag_prcpmean_ct, 
+                    argvar = list(fun="poly",degree=2,intercept=FALSE),
+                    arglag = list(fun="poly",degree=1,intercept=TRUE)   ### 
+                                      )
+
+
+
+
+cb.4.1.2.15.0_jgl<-crossbasis(lag_tmean_jgl, 
+                    argvar = list(fun="poly",degree=2,intercept=FALSE),
+                    arglag = list(fun="poly",degree=1,intercept=TRUE)   ### 
+                                      )
+
+
+
+cb.4.2.2.15.0_jgl<-crossbasis(lag_prcpmean_jgl, 
+                    argvar = list(fun="poly",degree=2,intercept=FALSE),
+                    arglag = list(fun="poly",degree=1,intercept=TRUE)   ### 
+                                      )
+
+
+
+
+
+
+
+
+
+#################################################################################
+
+cb.4.1.2.16.0_ct<-crossbasis(lag_tmean_ct, 
+                    argvar = list(fun="poly",degree=2,intercept=FALSE),
+                    arglag = list(fun="poly",degree=2,intercept=TRUE)   ### 1 
+                                      )
+
+
+
+cb.4.2.2.16.0_ct<-crossbasis(lag_prcpmean_ct, 
+                    argvar = list(fun="poly",degree=2,intercept=FALSE),
+                    arglag = list(fun="poly",degree=2,intercept=TRUE)   ### 
+                                      )
+
+
+
+
+cb.4.1.2.16.0_jgl<-crossbasis(lag_tmean_jgl, 
+                    argvar = list(fun="poly",degree=2,intercept=FALSE),
+                    arglag = list(fun="poly",degree=2,intercept=TRUE)   ### 
+                                      )
+
+
+
+cb.4.2.2.16.0_jgl<-crossbasis(lag_prcpmean_jgl, 
+                    argvar = list(fun="poly",degree=2,intercept=FALSE),
+                    arglag = list(fun="poly",degree=2,intercept=TRUE)   ### 
+                                      )
+
+
+#################################################################################
+
+cb.4.1.2.17.0_ct<-crossbasis(lag_tmean_ct, 
+                    argvar = list(fun="poly",degree=2,intercept=FALSE),
+                    arglag = list(fun="poly",degree=3,intercept=TRUE)   ### 1 
+                                      )
+
+
+
+cb.4.2.2.17.0_ct<-crossbasis(lag_prcpmean_ct, 
+                    argvar = list(fun="poly",degree=2,intercept=FALSE),
+                    arglag = list(fun="poly",degree=3,intercept=TRUE)   ### 
+                                      )
+
+
+
+
+cb.4.1.2.17.0_jgl<-crossbasis(lag_tmean_jgl, 
+                    argvar = list(fun="poly",degree=2,intercept=FALSE),
+                    arglag = list(fun="poly",degree=3,intercept=TRUE)   ### 
+                                      )
+
+
+
+cb.4.2.2.17.0_jgl<-crossbasis(lag_prcpmean_jgl, 
+                    argvar = list(fun="poly",degree=2,intercept=FALSE),
+                    arglag = list(fun="poly",degree=3,intercept=TRUE)   ### 
+                                      )
+
+
+```
+
+
+## hyper 3
+
+```{r}
+
+
+
+nlag        <- 16
+
+
+
+lag_prcpmean_ct       <- tsModel::Lag(db.coast.full$climate_precipitationmean, 
+                            group = db.coast.full$district_id, k = 0:nlag)
+
+
+lag_tmean_ct          <- tsModel::Lag(db.coast.full$climate_meantempmean, 
+                            group = db.coast.full$district_id, k = 0:nlag)
+
+
+lag_prcpmean_jgl      <- tsModel::Lag(db.jungle.full$climate_precipitationmean, 
+                            group = db.jungle.full$district_id, k = 0:nlag)
+
+
+
+lag_tmean_jgl          <- tsModel::Lag(db.jungle.full$climate_meantempmean, 
+                            group = db.jungle.full$district_id, k = 0:nlag)
+
+
+#################################################################################
+
+
+cb.4.1.3.1.0_ct<-crossbasis(lag_tmean_ct, 
+                    argvar = list(fun="poly",degree=3,intercept=FALSE),
+                    arglag = list(fun="poly",degree=1,intercept=FALSE)   ### 1 
+                                      )
+
+
+
+cb.4.2.3.1.0_ct<-crossbasis(lag_prcpmean_ct, 
+                    argvar = list(fun="poly",degree=3,intercept=FALSE),
+                    arglag = list(fun="poly",degree=1,intercept=FALSE)   ### 
+                                      )
+
+
+
+
+cb.4.1.3.1.0_jgl<-crossbasis(lag_tmean_jgl, 
+                    argvar = list(fun="poly",degree=3,intercept=FALSE),
+                    arglag = list(fun="poly",degree=1,intercept=FALSE)   ### 
+                                      )
+
+
+
+cb.4.2.3.1.0_jgl<-crossbasis(lag_prcpmean_jgl, 
+                    argvar = list(fun="poly",degree=3,intercept=FALSE),
+                    arglag = list(fun="poly",degree=1,intercept=FALSE)   ### 
+                                      )
+
+
+
+##################################################################################
+
+cb.4.1.3.2.0_ct<-crossbasis(lag_tmean_ct, 
+                    argvar = list(fun="poly",degree=3,intercept=FALSE),
+                    arglag = list(fun="poly",degree=2,intercept=FALSE)   ### 1 
+                                      )
+
+
+
+cb.4.2.3.2.0_ct<-crossbasis(lag_prcpmean_ct, 
+                    argvar = list(fun="poly",degree=3,intercept=FALSE),
+                    arglag = list(fun="poly",degree=2,intercept=FALSE)   ### 
+                                      )
+
+
+
+
+cb.4.1.3.2.0_jgl<-crossbasis(lag_tmean_jgl, 
+                    argvar = list(fun="poly",degree=3,intercept=FALSE),
+                    arglag = list(fun="poly",degree=2,intercept=FALSE)   ### 
+                                      )
+
+
+
+cb.4.2.3.2.0_jgl<-crossbasis(lag_prcpmean_jgl, 
+                    argvar = list(fun="poly",degree=3,intercept=FALSE),
+                    arglag = list(fun="poly",degree=2,intercept=FALSE)   ### 
+                                      )
+
+
+
+
+##################################################################################
+
+cb.4.1.3.3.0_ct<-crossbasis(lag_tmean_ct, 
+                    argvar = list(fun="poly",degree=3,intercept=FALSE),
+                    arglag = list(fun="poly",degree=3,intercept=FALSE)   ### 1 
+                                      )
+
+
+
+cb.4.2.3.3.0_ct<-crossbasis(lag_prcpmean_ct, 
+                    argvar = list(fun="poly",degree=3,intercept=FALSE),
+                    arglag = list(fun="poly",degree=3,intercept=FALSE)   ### 
+                                      )
+
+
+
+
+cb.4.1.3.3.0_jgl<-crossbasis(lag_tmean_jgl, 
+                    argvar = list(fun="poly",degree=3,intercept=FALSE),
+                    arglag = list(fun="poly",degree=3,intercept=FALSE)   ### 
+                                      )
+
+
+
+cb.4.2.3.3.0_jgl<-crossbasis(lag_prcpmean_jgl, 
+                    argvar = list(fun="poly",degree=3,intercept=FALSE),
+                    arglag = list(fun="poly",degree=3,intercept=FALSE)   ### 
+                                      )
+
+
+
+```
+
+
+
+
+## hyper 8
+
+```{r}
+
+
+
+
+nlag        <- 16
+
+
+
+lag_prcpmean_ct       <- tsModel::Lag(db.coast.full$climate_precipitationmean, 
+                            group = db.coast.full$district_id, k = 0:nlag)
+
+
+lag_tmean_ct          <- tsModel::Lag(db.coast.full$climate_meantempmean, 
+                            group = db.coast.full$district_id, k = 0:nlag)
+
+
+lag_prcpmean_jgl      <- tsModel::Lag(db.jungle.full$climate_precipitationmean, 
+                            group = db.jungle.full$district_id, k = 0:nlag)
+
+
+
+lag_tmean_jgl          <- tsModel::Lag(db.jungle.full$climate_meantempmean, 
+                            group = db.jungle.full$district_id, k = 0:nlag)
+
+
+#################################################################################
+
+
+
+cb.4.1.8.1.0_ct<-crossbasis(lag_tmean_ct, 
+                    argvar = list(fun = "ns", 
+                    knots = equalknots(db.coast.full$climate_meantempmean,3),
+                    intercept =FALSE),
+                    arglag = list(fun="poly",degree=1,intercept=FALSE)   ### 1 
+                                      )
+
+
+
+cb.4.2.8.1.0_ct<-crossbasis(lag_prcpmean_ct, 
+                    argvar = list(fun = "ns", 
+                    knots = equalknots(db.coast.full$climate_precipitationmean, 3),
+                    intercept =FALSE),
+                    arglag = list(fun="poly",degree=1,intercept=FALSE)   ### 1 
+                                      )
+
+
+cb.4.1.8.1.0_jgl<-crossbasis(lag_tmean_jgl, 
+                    argvar = list(fun = "ns", 
+                    knots = equalknots(db.jungle.full$climate_meantempmean,3),
+                    intercept =FALSE),
+                    arglag = list(fun="poly",degree=1,intercept=FALSE)   ### 1 
+                                      )
+
+
+
+cb.4.2.8.1.0_jgl<-crossbasis(lag_prcpmean_jgl, 
+                    argvar = list(fun = "ns", 
+                    knots = equalknots(db.jungle.full$climate_precipitationmean, 3),
+                    intercept =FALSE),
+                    arglag = list(fun="poly",degree=1,intercept=FALSE)   ### 1 
+                                      )
+
+
+#################################################################################
+
+
+cb.4.1.8.2.0_ct<-crossbasis(lag_tmean_ct, 
+                    argvar = list(fun = "ns", 
+                    knots = equalknots(db.coast.full$climate_meantempmean,3),
+                    intercept =FALSE),
+                    arglag = list(fun="poly",degree=2,intercept=FALSE)   ### 1 
+                                      )
+
+
+
+cb.4.2.8.2.0_ct<-crossbasis(lag_prcpmean_ct, 
+                    argvar = list(fun = "ns", 
+                    knots = equalknots(db.coast.full$climate_precipitationmean, 3),
+                    intercept =FALSE),
+                    arglag = list(fun="poly",degree=2,intercept=FALSE)   ### 1 
+                                      )
+
+
+cb.4.1.8.2.0_jgl<-crossbasis(lag_tmean_jgl, 
+                    argvar = list(fun = "ns", 
+                    knots = equalknots(db.jungle.full$climate_meantempmean,3),
+                    intercept =FALSE),
+                    arglag = list(fun="poly",degree=2,intercept=FALSE)   ### 1 
+                                      )
+
+
+
+cb.4.2.8.2.0_jgl<-crossbasis(lag_prcpmean_jgl, 
+                    argvar = list(fun = "ns", 
+                    knots = equalknots(db.jungle.full$climate_precipitationmean, 3),
+                    intercept =FALSE),
+                    arglag = list(fun="poly",degree=2,intercept=FALSE)   ### 1 
+                                      )
+
+
+#################################################################################
+##################################################################################
+
+lagknot = equalknots(0:nlag, 1)
+
+cb.4.1.8.5.0_ct<-crossbasis(lag_tmean_ct, 
+                    argvar = list(fun = "ns", 
+                    knots = equalknots(db.coast.full$climate_meantempmean, 3),
+                    intercept =FALSE),
+                    arglag  = list(fun = "ns", knots = lagknot,intercept=FALSE)
+                                      )
+
+
+
+cb.4.2.8.5.0_ct<-crossbasis(lag_prcpmean_ct, 
+                    argvar = list(fun = "ns", 
+                    knots = equalknots(db.coast.full$climate_precipitationmean, 3),
+                    intercept =FALSE),
+                    arglag  = list(fun = "ns", knots = lagknot,intercept=FALSE)
+                                      )
+
+
+
+cb.4.1.8.5.0_jgl<-crossbasis(lag_tmean_jgl, 
+                    argvar = list(fun = "ns", 
+                    knots = equalknots(db.jungle.full$climate_meantempmean, 3),
+                    intercept =FALSE),
+                    arglag  = list(fun = "ns", knots = lagknot,intercept=FALSE)
+                                      )
+
+
+
+cb.4.2.8.5.0_jgl<-crossbasis(lag_prcpmean_jgl, 
+                    argvar = list(fun = "ns", 
+                    knots = equalknots(db.jungle.full$climate_precipitationmean, 3),
+                    intercept =FALSE),
+                    arglag  = list(fun = "ns", knots = lagknot,intercept=FALSE)
+                                      )
+
+
+
+
+```
+
+
+
+
+# name basis
+
+##### hyper 2
+
+```{r}
+
+      
+
+  ###################################################################################
+      
+      
+      colnames(cb.4.1.2.15.0_ct) = paste0("basis_tmean_ct.",    colnames(cb.4.1.2.15.0_ct)) 
+      colnames(cb.4.2.2.15.0_ct) = paste0("basis_meanprcp_ct.", colnames(cb.4.2.2.15.0_ct))  
+      colnames(cb.4.1.2.15.0_jgl) = paste0("basis_tmean_jgl.",    colnames(cb.4.1.2.15.0_jgl)) 
+      colnames(cb.4.2.2.15.0_jgl) = paste0("basis_meanprcp_jgl.", colnames(cb.4.2.2.15.0_jgl))        
+      colnames(cb.4.1.2.16.0_ct) = paste0("basis_tmean_ct.",    colnames(cb.4.1.2.16.0_ct)) 
+      colnames(cb.4.2.2.16.0_ct) = paste0("basis_meanprcp_ct.", colnames(cb.4.2.2.16.0_ct))
+      colnames(cb.4.1.2.16.0_jgl) = paste0("basis_tmean_jgl.",    colnames(cb.4.1.2.16.0_jgl)) 
+      colnames(cb.4.2.2.16.0_jgl) = paste0("basis_meanprcp_jgl.", colnames(cb.4.2.2.16.0_jgl))
+      
+      
+      colnames(cb.4.1.2.17.0_ct) = paste0("basis_tmean_ct.",    colnames(cb.4.1.2.17.0_ct)) 
+      colnames(cb.4.2.2.17.0_ct) = paste0("basis_meanprcp_ct.", colnames(cb.4.2.2.17.0_ct)) 
+      colnames(cb.4.1.2.17.0_jgl) = paste0("basis_tmean_jgl.",    colnames(cb.4.1.2.17.0_jgl)) 
+      colnames(cb.4.2.2.17.0_jgl) = paste0("basis_meanprcp_jgl.", colnames(cb.4.2.2.17.0_jgl))       
+      
+      
+
+      
+  
+      
+      
+      
+      
+      
+      
+      
+```
+
+
+##### hyper 3
+
+```{r,message=F,warning=F}
+
+
+      
+### COSTA + selva
+      
+      
+      colnames(cb.4.1.3.1.0_ct) = paste0("basis_tmean_ct.",      colnames(cb.4.1.3.1.0_ct)) 
+      colnames(cb.4.2.3.1.0_ct) = paste0("basis_meanprcp_ct.",   colnames(cb.4.2.3.1.0_ct))  
+      colnames(cb.4.1.3.2.0_ct) = paste0("basis_tmean_ct.",      colnames(cb.4.1.3.2.0_ct)) 
+      colnames(cb.4.2.3.2.0_ct) = paste0("basis_meanprcp_ct.",   colnames(cb.4.2.3.2.0_ct)) 
+      colnames(cb.4.1.3.3.0_ct) = paste0("basis_tmean_ct.",      colnames(cb.4.1.3.3.0_ct)) 
+      colnames(cb.4.2.3.3.0_ct) = paste0("basis_meanprcp_ct.",   colnames(cb.4.2.3.3.0_ct))
+      
+      colnames(cb.4.1.3.1.0_jgl) = paste0("basis_tmean_jgl.",      colnames(cb.4.1.3.1.0_jgl)) 
+      colnames(cb.4.2.3.1.0_jgl) = paste0("basis_meanprcp_jgl.",   colnames(cb.4.2.3.1.0_jgl))  
+      colnames(cb.4.1.3.2.0_jgl) = paste0("basis_tmean_jgl.",      colnames(cb.4.1.3.2.0_jgl)) 
+      colnames(cb.4.2.3.2.0_jgl) = paste0("basis_meanprcp_jgl.",   colnames(cb.4.2.3.2.0_jgl)) 
+      colnames(cb.4.1.3.3.0_jgl) = paste0("basis_tmean_jgl.",      colnames(cb.4.1.3.3.0_jgl)) 
+      colnames(cb.4.2.3.3.0_jgl) = paste0("basis_meanprcp_jgl.",   colnames(cb.4.2.3.3.0_jgl))
+      
+      
+#############################################################################################   
+```
+
+
+##### hyper 8
+
+```{r,message=F,warning=F}
+
+      colnames(cb.4.1.8.1.0_ct) = paste0("basis_tmean_ct.",      colnames(cb.4.1.8.1.0_ct)) 
+      colnames(cb.4.2.8.1.0_ct) = paste0("basis_meanprcp_ct.",   colnames(cb.4.2.8.1.0_ct))  
+      colnames(cb.4.1.8.2.0_ct) = paste0("basis_tmean_ct.",      colnames(cb.4.1.8.2.0_ct)) 
+      colnames(cb.4.2.8.2.0_ct) = paste0("basis_meanprcp_ct.",   colnames(cb.4.2.8.2.0_ct)) 
+      colnames(cb.4.1.8.5.0_ct) = paste0("basis_tmean_ct.",      colnames(cb.4.1.8.5.0_ct)) 
+      colnames(cb.4.2.8.5.0_ct) = paste0("basis_meanprcp_ct.",   colnames(cb.4.2.8.5.0_ct))
+      
+      colnames(cb.4.1.8.1.0_jgl) = paste0("basis_tmean_jgl.",      colnames(cb.4.1.8.1.0_jgl)) 
+      colnames(cb.4.2.8.1.0_jgl) = paste0("basis_meanprcp_jgl.",   colnames(cb.4.2.8.1.0_jgl))  
+      colnames(cb.4.1.8.2.0_jgl) = paste0("basis_tmean_jgl.",      colnames(cb.4.1.8.2.0_jgl)) 
+      colnames(cb.4.2.8.2.0_jgl) = paste0("basis_meanprcp_jgl.",   colnames(cb.4.2.8.2.0_jgl)) 
+      colnames(cb.4.1.8.5.0_jgl) = paste0("basis_tmean_jgl.",      colnames(cb.4.1.8.5.0_jgl)) 
+      colnames(cb.4.2.8.5.0_jgl) = paste0("basis_meanprcp_jgl.",   colnames(cb.4.2.8.5.0_jgl))
+      
+```
+      
+
+
+
+
+
+
+# Formulas
+
+## Spatio temporal
+
+
+```{r,message=F,warning=F}
+
+
+formula_base_dengue_12_1_ct    =     cases_tot  ~  f(week, 
+                                                  replicate = prov_id, 
+                                                  model = "rw1",cyclic = TRUE, 
+                                                  constr = TRUE,
+                                                  scale.model = TRUE) + 
+                                   f(district_id, model="bym2",
+                                     graph=W.peru_coast) + socio_ubn 
+
+formula_base_dengue_12_1_jgl    =     cases_tot  ~  f(week, 
+                                                  replicate = prov_id, 
+                                                  model = "rw1",cyclic = TRUE, 
+                                                  constr = TRUE,
+                                                  scale.model = TRUE) + 
+                                   f(district_id, model="bym2",
+                                     graph=W.peru_jungle) + socio_ubn 
+
+
+
+
+
+
+```
+
+
+## spatiotempo + crossbasis
+
+#### hyper 2
+
+
+
+##### lag 4
+
+```{r}
+
+
+####################################################
+
+
+# 4  lag , 30 = prcpmean + tmean
+formula_12_1_c_4_30_2_15_2_15_0_0_ct <- update.formula(formula_base_dengue_12_1_ct, ~.
+                                         + cb.4.1.2.15.0_ct + cb.4.2.2.15.0_ct)
+
+formula_12_1_c_4_30_2_15_2_15_0_0_jgl <- update.formula(formula_base_dengue_12_1_jgl, ~.
+                                         + cb.4.1.2.15.0_jgl + cb.4.2.2.15.0_jgl)
+
+
+formula_12_1_c_4_30_2_16_2_16_0_0_ct <- update.formula(formula_base_dengue_12_1_ct, ~.
+                                         + cb.4.1.2.16.0_ct + cb.4.2.2.16.0_ct)
+
+formula_12_1_c_4_30_2_16_2_16_0_0_jgl <- update.formula(formula_base_dengue_12_1_jgl, ~.
+                                         + cb.4.1.2.16.0_jgl + cb.4.2.2.16.0_jgl)
+
+
+formula_12_1_c_4_30_2_17_2_17_0_0_ct <- update.formula(formula_base_dengue_12_1_ct, ~.
+                                         + cb.4.1.2.17.0_ct + cb.4.2.2.17.0_ct)
+
+formula_12_1_c_4_30_2_17_2_17_0_0_jgl <- update.formula(formula_base_dengue_12_1_jgl, ~.
+                                         + cb.4.1.2.17.0_jgl + cb.4.2.2.17.0_jgl)
+
+
+#####################################################################
+
+
+```
+
+
+#### hyper 3
+
+
+##### lag 4
+
+```{r}
+
+
+
+
+########## COAST JUNGLE
+
+
+formula_12_1_c_4_30_3_1_3_1_0_0_ct <- update.formula(formula_base_dengue_12_1_ct, ~.
+                                         + cb.4.1.3.1.0_ct + cb.4.2.3.1.0_ct)
+
+formula_12_1_c_4_30_3_1_3_1_0_0_jgl <- update.formula(formula_base_dengue_12_1_jgl, ~.
+                                         + cb.4.1.3.1.0_jgl + cb.4.2.3.1.0_jgl)
+
+
+
+formula_12_1_c_4_30_3_2_3_2_0_0_ct <- update.formula(formula_base_dengue_12_1_ct, ~.
+                                         + cb.4.1.3.2.0_ct + cb.4.2.3.2.0_ct)
+
+formula_12_1_c_4_30_3_2_3_2_0_0_jgl <- update.formula(formula_base_dengue_12_1_jgl, ~.
+                                         + cb.4.1.3.2.0_jgl + cb.4.2.3.2.0_jgl)
+
+
+formula_12_1_c_4_30_3_3_3_3_0_0_ct <- update.formula(formula_base_dengue_12_1_ct, ~.
+                                         + cb.4.1.3.3.0_ct + cb.4.2.3.3.0_ct)
+
+formula_12_1_c_4_30_3_3_3_3_0_0_jgl <- update.formula(formula_base_dengue_12_1_jgl, ~.
+                                         + cb.4.1.3.3.0_jgl + cb.4.2.3.3.0_jgl)
+
+
+
+```
+
+
+
+
+
+
+#### Hyper 8
+
+
+##### lag 4
+
+```{r}
+
+########## COAST JUNGLE
+
+
+formula_12_1_c_4_30_8_1_8_1_0_0_ct <- update.formula(formula_base_dengue_12_1_ct, ~.
+                                         + cb.4.1.8.1.0_ct + cb.4.2.8.1.0_ct)
+
+formula_12_1_c_4_30_8_1_8_1_0_0_jgl <- update.formula(formula_base_dengue_12_1_jgl, ~.
+                                         + cb.4.1.8.1.0_jgl + cb.4.2.8.1.0_jgl)
+
+
+
+formula_12_1_c_4_30_8_2_8_2_0_0_ct <- update.formula(formula_base_dengue_12_1_ct, ~.
+                                         + cb.4.1.8.2.0_ct + cb.4.2.8.2.0_ct)
+
+formula_12_1_c_4_30_8_2_8_2_0_0_jgl <- update.formula(formula_base_dengue_12_1_jgl, ~.
+                                         + cb.4.1.8.2.0_jgl + cb.4.2.8.2.0_jgl)
+
+
+formula_12_1_c_4_30_8_5_8_5_0_0_ct <- update.formula(formula_base_dengue_12_1_ct, ~.
+                                         + cb.4.1.8.5.0_ct + cb.4.2.8.5.0_ct)
+
+formula_12_1_c_4_30_8_5_8_5_0_0_jgl <- update.formula(formula_base_dengue_12_1_jgl, ~.
+                                         + cb.4.1.8.5.0_jgl + cb.4.2.8.5.0_jgl)
+
+
+```
+
+
+# Fit models
+
+
+#### hyper 2 
+
+
+#####  16 lags
+
+```{r}
+
+
+
+# costa + selva
+
+test_den_12_1_c_4_30_2_15_2_15_0_0_ct<-inla.batch.dengue(formula_12_1_c_4_30_2_15_2_15_0_0_ct,dat1=db.coast.full)
+test_den_12_1_c_4_30_2_15_2_15_0_0_jgl<-inla.batch.dengue(formula_12_1_c_4_30_2_15_2_15_0_0_jgl,dat1=db.jungle.full)
+test_den_12_1_c_4_30_2_16_2_16_0_0_ct<-inla.batch.dengue(formula_12_1_c_4_30_2_16_2_16_0_0_ct,dat1=db.coast.full)
+test_den_12_1_c_4_30_2_16_2_16_0_0_jgl<-inla.batch.dengue(formula_12_1_c_4_30_2_16_2_16_0_0_jgl,dat1=db.jungle.full)
+test_den_12_1_c_4_30_2_17_2_17_0_0_ct<-inla.batch.dengue(formula_12_1_c_4_30_2_17_2_17_0_0_ct,dat1=db.coast.full)
+test_den_12_1_c_4_30_2_17_2_17_0_0_jgl<-inla.batch.dengue(formula_12_1_c_4_30_2_17_2_17_0_0_jgl,dat1=db.jungle.full)
+
+
+```
+
+
+#### hyper 3 
+
+
+#####  16 lags
+
+```{r}
+
+
+
+
+## COSTA + SELVA 
+
+test_den_12_1_c_4_30_3_1_3_1_0_0_ct<-inla.batch.dengue(formula_12_1_c_4_30_3_1_3_1_0_0_ct,dat1=db.coast.full)
+test_den_12_1_c_4_30_3_2_3_2_0_0_ct<-inla.batch.dengue(formula_12_1_c_4_30_3_2_3_2_0_0_ct,dat1=db.coast.full)
+test_den_12_1_c_4_30_3_3_3_3_0_0_ct<-inla.batch.dengue(formula_12_1_c_4_30_3_3_3_3_0_0_ct,dat1=db.coast.full)
+
+test_den_12_1_c_4_30_3_1_3_1_0_0_jgl<-inla.batch.dengue(formula_12_1_c_4_30_3_1_3_1_0_0_jgl,dat1=db.jungle.full)
+test_den_12_1_c_4_30_3_2_3_2_0_0_jgl<-inla.batch.dengue(formula_12_1_c_4_30_3_2_3_2_0_0_jgl,dat1=db.jungle.full)
+test_den_12_1_c_4_30_3_3_3_3_0_0_jgl<-inla.batch.dengue(formula_12_1_c_4_30_3_3_3_3_0_0_jgl,dat1=db.jungle.full)
+
+
+
+```
+
+
+
+
+
+
+
+
+### hyper 8
+
+
+#####  16 lags
+
+```{r}
+
+
+## COSTA + SELVA 
+
+test_den_12_1_c_4_30_8_1_8_1_0_0_ct<-inla.batch.dengue(formula_12_1_c_4_30_8_1_8_1_0_0_ct,dat1=db.coast.full)
+test_den_12_1_c_4_30_8_2_8_2_0_0_ct<-inla.batch.dengue(formula_12_1_c_4_30_8_2_8_2_0_0_ct,dat1=db.coast.full)
+test_den_12_1_c_4_30_8_5_8_5_0_0_ct<-inla.batch.dengue(formula_12_1_c_4_30_8_5_8_5_0_0_ct,dat1=db.coast.full)
+test_den_12_1_c_4_30_8_1_8_1_0_0_jgl<-inla.batch.dengue(formula_12_1_c_4_30_8_1_8_1_0_0_jgl,dat1=db.jungle.full)
+test_den_12_1_c_4_30_8_2_8_2_0_0_jgl<-inla.batch.dengue(formula_12_1_c_4_30_8_2_8_2_0_0_jgl,dat1=db.jungle.full)
+test_den_12_1_c_4_30_8_5_8_5_0_0_jgl<-inla.batch.dengue(formula_12_1_c_4_30_8_5_8_5_0_0_jgl,dat1=db.jungle.full)
+
+```
+
+
+
+
+
+
+
+
+
+# save model
+
+#### hyper 2
+
+```{r}
+
+
+
+#########################################################################################################
+#########################################################################################################
+
+
+### costa + selva 
+saveRDS(test_den_12_1_c_4_30_2_15_2_15_0_0_ct ,"output/model_den_12_1_c_4_30_2_15_2_15_0_0_ct.rds")
+saveRDS(test_den_12_1_c_4_30_2_15_2_15_0_0_jgl,"output/model_den_12_1_c_4_30_2_15_2_15_0_0_jgl.rds")
+saveRDS(test_den_12_1_c_4_30_2_16_2_16_0_0_ct ,"output/model_den_12_1_c_4_30_2_16_2_16_0_0_ct.rds")
+saveRDS(test_den_12_1_c_4_30_2_16_2_16_0_0_jgl,"output/model_den_12_1_c_4_30_2_16_2_16_0_0_jgl.rds")
+saveRDS(test_den_12_1_c_4_30_2_17_2_17_0_0_ct ,"output/model_den_12_1_c_4_30_2_17_2_17_0_0_ct.rds")
+saveRDS(test_den_12_1_c_4_30_2_17_2_17_0_0_jgl,"output/model_den_12_1_c_4_30_2_17_2_17_0_0_jgl.rds")
+
+
+
+```
+
+#### hyper 3
+
+
+```{r,message=F,warning=F}
+
+
+### costa + selva 
+saveRDS(test_den_12_1_c_4_30_3_1_3_1_0_0_ct ,"output/model_den_12_1_c_4_30_3_1_3_1_0_0_ct.rds")
+saveRDS(test_den_12_1_c_4_30_3_2_3_2_0_0_ct ,"output/model_den_12_1_c_4_30_3_2_3_2_0_0_ct.rds")
+saveRDS(test_den_12_1_c_4_30_3_3_3_3_0_0_ct ,"output/model_den_12_1_c_4_30_3_3_3_3_0_0_ct.rds")
+
+saveRDS(test_den_12_1_c_4_30_3_1_3_1_0_0_jgl,"output/model_den_12_1_c_4_30_3_1_3_1_0_0_jgl.rds")
+saveRDS(test_den_12_1_c_4_30_3_2_3_2_0_0_jgl,"output/model_den_12_1_c_4_30_3_2_3_2_0_0_jgl.rds")
+saveRDS(test_den_12_1_c_4_30_3_3_3_3_0_0_jgl,"output/model_den_12_1_c_4_30_3_3_3_3_0_0_jgl.rds")
+
+
+
+
+
+```
+
+
+
+
+
+### hyper 8
+
+```{r}
+
+
+### costa + selva 
+saveRDS(test_den_12_1_c_4_30_8_1_8_1_0_0_ct ,"output/model_den_12_1_c_4_30_8_1_8_1_0_0_ct.rds")
+saveRDS(test_den_12_1_c_4_30_8_2_8_2_0_0_ct ,"output/model_den_12_1_c_4_30_8_2_8_2_0_0_ct.rds")
+saveRDS(test_den_12_1_c_4_30_8_5_8_5_0_0_ct ,"output/model_den_12_1_c_4_30_8_5_8_5_0_0_ct.rds")
+saveRDS(test_den_12_1_c_4_30_8_1_8_1_0_0_jgl,"output/model_den_12_1_c_4_30_8_1_8_1_0_0_jgl.rds")
+saveRDS(test_den_12_1_c_4_30_8_2_8_2_0_0_jgl,"output/model_den_12_1_c_4_30_8_2_8_2_0_0_jgl.rds")
+saveRDS(test_den_12_1_c_4_30_8_5_8_5_0_0_jgl,"output/model_den_12_1_c_4_30_8_5_8_5_0_0_jgl.rds")
+
+
+
+
+```
+
+
+
+
+
+
+# Extract predict values 
+
+## - TEMP MEAN
+
+### jungle 
+```{r,message=F,warning=F}
+
+
+
+model.dengue        <-  test_den_12_1_c_4_30_8_2_8_2_0_0_jgl
+
+coef1               <-   model.dengue$summary.fixed
+
+
+
+indt.tmean                <- grep("basis_tmean_jgl", model.dengue$names.fixed)
+indt.prcp                <-  grep("basis_meanprcp_jgl", model.dengue$names.fixed)
+
+
+#         
+ab.prcp         <- coef1[indt.prcp,]$mean
+names(ab.prcp)  <- rownames(coef1)[indt.prcp]
+vcov            <- model.dengue$misc$lincomb.derived.covariance.matrix  
+vcov1.prcp      <- vcov[indt.prcp,indt.prcp]
+
+#
+
+ab.tmean            <- coef1[indt.tmean,]$mean
+names(indt.tmean)   <- rownames(coef1)[indt.tmean]
+vcov                <- model.dengue$misc$lincomb.derived.covariance.matrix  
+vcov1.tmean         <- vcov[indt.tmean,indt.tmean]
+
+
+
+data       <- db.jungle.full
+
+# part 2
+
+predt.2.tmean_jgl    <- crosspred(cb.4.1.8.2.0_jgl, coef = ab.tmean, vcov=vcov1.tmean,
+                   model.link = "log", bylag = 0.25, 
+                   cen = 0 #edian(data$climate_mintemp)
+                   ) 
+
+predt.2.prcp_jgl       <- crosspred(cb.4.2.8.2.0_jgl, coef = ab.prcp, vcov=vcov1.prcp,
+                   model.link = "log", bylag = 0.25, 
+                   cen = 0 #edian(data$climate_mintemp)
+                   ) 
+
+
+
+
+```
+
+### coast
+
+```{r,message=F,warning=F}
+#2_16
+
+
+model.dengue        <-  test_den_12_1_c_4_30_8_2_8_2_0_0_ct
+
+coef1               <-   model.dengue$summary.fixed
+
+
+
+indt.tmean                <- grep("basis_tmean_ct", model.dengue$names.fixed)
+indt.prcp                <-  grep("basis_meanprcp_ct", model.dengue$names.fixed)
+
+
+#         
+ab.prcp         <- coef1[indt.prcp,]$mean
+names(ab.prcp)  <- rownames(coef1)[indt.prcp]
+vcov            <- model.dengue$misc$lincomb.derived.covariance.matrix  
+vcov1.prcp      <- vcov[indt.prcp,indt.prcp]
+
+#
+
+ab.tmean            <- coef1[indt.tmean,]$mean
+names(indt.tmean)   <- rownames(coef1)[indt.tmean]
+vcov                <- model.dengue$misc$lincomb.derived.covariance.matrix  
+vcov1.tmean         <- vcov[indt.tmean,indt.tmean]
+
+
+
+data       <- db.coast.full
+
+# part 2
+
+predt.2.tmean_ct    <- crosspred(cb.4.1.8.2.0_ct, coef = ab.tmean, vcov=vcov1.tmean,
+                   model.link = "log", bylag = 0.25, 
+                   cen = 0 #edian(data$climate_mintemp)
+                   ) 
+
+predt.2.prcp_ct    <- crosspred(cb.4.2.8.2.0_ct, coef = ab.prcp, vcov=vcov1.prcp,
+                   model.link = "log", bylag = 0.25, 
+                   cen = 0 #edian(data$climate_mintemp)
+                   ) 
+
+
+
+
+```
+
+ 
+
+
+## Contour plot
+
+### coast
+
+```{r,message=F,warning=F}
+#2_16
+
+
+
+
+contour_predt_plot(predt.2.tmean_ct,"RdGy",
+                   nlag=16,
+                   #nlag=24,
+                   var_lab=expression(paste("Temperature (",degree,"C)"))
+                   )
+
+
+
+
+```
+
+### jungle
+
+```{r,message=F,warning=F}
+
+# 3_3 rev
+
+
+
+
+contour_predt_plot(predt.2.tmean_jgl,"RdGy",
+                   nlag=16,
+                   #nlag=24,
+                   var_lab=expression(paste("Temperature (",degree,"C)"))
+                   )
+
+
+
+
+
+```
+
+
+
+
+## Surface plot (3D) interactive
+
+```{r,message=F,warning=F}
+
+  rr.fit<-list(
+    
+               z = predt.2.tmin$matRRfit,
+               x = as.vector(colnames(predt.2.tmin$matRRfit)),  # Cuidado con el orden
+               y = as.numeric(row.names(predt.2.tmin$matRRfit))
+               
+  )
+
+z <- predt.2.tmin$matRRfit
+
+# 
+# z_c <- predt.2$matRRfit
+# x_c =  as.vector(colnames(predt.2$matRRfit)) 
+# y_c =  as.numeric(row.names(predt.2$matRRfit))
+# 
+# dim(z_c)    # 36 61
+# length(x_c) # 61
+# length(y_c) # 36
+
+# Create the custom color scale using the "BrBG" palette
+colors <- colorRampPalette(c("black","#EDF8FB","darkred"), space = "Lab")(100)
+
+#brbg_colors <- colorRamp(c("#A6611A", "#DFC27D", "#F5F5F5", "#80CDC1", "#018571"))
+
+
+# Set the threshold value
+threshold <- 1
+
+# Determine the maximum absolute value in 'z'
+max_abs_value <- max(abs(z))
+
+# Adjust the range of values to span from -inf to -threshold and from threshold to +inf
+adjusted_values <- ifelse(abs(z) > threshold, sign(z) * Inf, z / max_abs_value)
+
+# Map the adjusted values to the corresponding colors
+colors_mapped <- colors[findInterval(adjusted_values, seq(-1, 1, length.out = 100))]
+
+
+
+library(plotly)
+sequence             <- seq(from = 0, to = 21, by = 3)
+
+sequence             <- seq(from = 0, to = 15, by = 3)
+sequence_with_prefix <- paste0("lag", sequence)
+
+x_breaks<-sequence_with_prefix
+
+(t <- plot_ly(z = rr.fit$z,x=rr.fit$x,
+                y=rr.fit$y, 
+                type = "surface",
+                colors = colors)%>% layout(
+                          scene = list(
+                            xaxis = list(title = "Lag",tickvals = x_breaks),
+                            yaxis = list(title = "T. max"),
+                            zaxis = list(title = "RR")
+                          )
+                      )
+  )
+
+
+
+
+```
+
+
+
+## Cross section plot 
+
+### Coast
+
+```{r,message=F,warning=F}
+#2_16
+
+two_cross_section_plot_2(predt.2.tmean_ct,
+                         basis_variable = db.coast.full$climate_meantempmean,
+                       cut.a = 5, cut.a.label = "low temperature scenario(10 c)",
+                       cut.b = 24,cut.b.label = "high temperature scenario(24 c)",
+                       lag_basis = 16,lim_max_y = 5,palette = "RdGy")
+
+
+```
+
+
+### Jungle
+
+
+```{r,message=F,warning=F}
+
+#3_3 rev
+#2_16 rev
+
+
+two_cross_section_plot_2(predt.2.tmean_jgl,
+                         basis_variable = db.jungle.full$climate_meantempmean,
+                       cut.a = 7, cut.a.label = "low temperature scenario(10 c)",
+                       cut.b = 25,cut.b.label = "high temperature scenario(24 c)",
+                       lag_basis = 16,lim_max_y = 5,palette = "RdGy")
+
+
+
+```
+
+
+
+
+### relative risk ( OPTIONAL)
+
+```{r}
+
+
+
+  predt_object <- predt.2.tmean
+      ma       <- predt_object$matfit
+      rr       <- predt_object$matRRfit
+      rr.lci   <- predt_object$matRRlow
+      rr.uci   <- predt_object$matRRhigh
+
+   max(rr)
+   # which(rr == max(rr), arr.ind = TRUE)
+   # rr[24,33]
+   
+   # Coordenadas del maximo
+   rr[which(rr == max(rr), arr.ind = TRUE)]
+   rr.lci[which(rr == max(rr), arr.ind = TRUE)]
+   rr.uci[which(rr == max(rr), arr.ind = TRUE)]
+   
+   mean(rr.uci-rr.lci)   # 3.64903
+   median(rr.uci-rr.lci) # 2.408041
+   
+   
+options(scipen=999)
+     predt_object <- predt.2.prcp
+      ma       <- predt_object$matfit
+      rr       <- predt_object$matRRfit
+      rr.lci   <- predt_object$matRRlow
+      rr.uci   <- predt_object$matRRhigh
+      
+      mean(rr.uci-rr.lci)  # 3235040869037693
+      median(rr.uci-rr.lci) # 1.160247
+
+   max(rr)
+   # which(rr == max(rr), arr.ind = TRUE)
+   # rr[24,33]
+   
+   # Coordenadas del maximo
+   rr[which(rr == max(rr), arr.ind = TRUE)]
+   rr.lci[which(rr == max(rr), arr.ind = TRUE)]
+   rr.uci[which(rr == max(rr), arr.ind = TRUE)]
+   
+   
+
+```
+
+
+## - PRCP MEAN
+
+### Contour plot
+
+#### coast
+
+```{r,message=F,warning=F}
+
+#2_16 rev
+#3_2 rev
+
+
+contour_predt_plot(predt.2.prcp_ct,"BrBG",
+                   nlag=16,
+                   #nlag=24,
+                   var_lab=expression(paste("Precipitation (mm) "))
+                   )
+
+
+
+
+
+```
+
+#### jungle
+
+```{r,message=F,warning=F}
+
+
+contour_predt_plot(predt.2.prcp_jgl,"BrBG",
+                   nlag=16,
+                   #nlag=24,
+                   var_lab=expression(paste("Precipitation (mm) "))
+                   )
+
+
+
+
+```
+
+
+
+
+### Surface plot (3D) interactive
+
+```{r,message=F,warning=F}
+
+  rr.fit<-list(
+    
+               z = predt.2.prcp$matRRfit,
+               x = as.vector(colnames(predt.2.prcp$matRRfit)),  # Cuidado con el orden
+               y = as.numeric(row.names(predt.2.prcp$matRRfit))
+               
+  )
+
+z <- predt.2.prcp$matRRfit
+
+# 
+# z_c <- predt.2$matRRfit
+# x_c =  as.vector(colnames(predt.2$matRRfit)) 
+# y_c =  as.numeric(row.names(predt.2$matRRfit))
+# 
+# dim(z_c)    # 36 61
+# length(x_c) # 61
+# length(y_c) # 36
+
+# Create the custom color scale using the "BrBG" palette
+colors <- colorRampPalette(c("#018571","#EDF8FB","#A6611A" ), space = "Lab")(100)
+
+#brbg_colors <- colorRamp(c("#A6611A", "#DFC27D", "#F5F5F5", "#80CDC1", "#018571"))
+
+
+# Set the threshold value
+threshold <- 1
+
+# Determine the maximum absolute value in 'z'
+max_abs_value <- max(abs(z))
+
+# Adjust the range of values to span from -inf to -threshold and from threshold to +inf
+adjusted_values <- ifelse(abs(z) > threshold, sign(z) * Inf, z / max_abs_value)
+
+# Map the adjusted values to the corresponding colors
+colors_mapped <- colors[findInterval(adjusted_values, seq(-1, 1, length.out = 100))]
+
+
+
+library(plotly)
+sequence             <- seq(from = 0, to = 21, by = 3)
+
+sequence             <- seq(from = 0, to = 15, by = 3)
+sequence_with_prefix <- paste0("lag", sequence)
+
+x_breaks<-sequence_with_prefix
+
+(t <- plot_ly(z = rr.fit$z,x=rr.fit$x,
+                y=rr.fit$y, 
+                type = "surface",
+                colors = colors)%>% layout(
+                          scene = list(
+                            xaxis = list(title = "Lag",tickvals = x_breaks),
+                            yaxis = list(title = "Precipitation"),
+                            zaxis = list(title = "RR")
+                          )
+                      )
+  )
+
+
+
+
+```
+
+
+### Cross section plot 
+
+#### Coast
+
+```{r,message=F,warning=F}
+
+
+
+
+two_cross_section_plot_2(predt.2.prcp_ct,
+                         basis_variable = db.coast.full$climate_precipitationmean,
+                       cut.a =10, cut.a.label = "dry scenario  (8 mm)",
+                       cut.b = 40,cut.b.label = "wet scenario (50 mm)",
+                       lag_basis = 16,lim_max_y =3,palette = "BrBG")
+
+
+```
+
+#### Jungle
+
+```{r,message=F,warning=F}
+
+
+#8_5,8_2 rev *
+
+two_cross_section_plot_2(predt.2.prcp_jgl,
+                         basis_variable = db.coast.full$climate_precipitationmean,
+                       cut.a =10, cut.a.label = "dry scenario  (8 mm)",
+                       cut.b = 36,cut.b.label = "wet scenario (50 mm)",
+                       lag_basis = 16,lim_max_y =3,palette = "BrBG")
+
+
+```
